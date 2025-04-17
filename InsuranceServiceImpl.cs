@@ -8,32 +8,41 @@ namespace InsuranceClaim.service
 {
     public class InsuranceServiceImpl : IPolicyService
     {
+        private SqlConnection conn;
+        private object customerName;
+
         // --- POLICY METHODS ---
 
         public bool CreatePolicy(Policy policy)
         {
-            using (SqlConnection connection = DBUtility.GetConnection())
+            try
             {
-                if (connection == null) return false;
+                // Only allow valid policy types
+                List<string> validTypes = new List<string> { "Health", "Life", "Vehicle" };
 
-                try
+                if (policy.PolicyType != "Health" && policy.PolicyType != "Life")
                 {
-                    string query = "INSERT INTO Policies (policyName, policyType, coverageAmount) VALUES (@policyName, @policyType, @coverageAmount)";
-                    SqlCommand cmd = new SqlCommand(query, connection);
-                    cmd.Parameters.AddWithValue("@policyName", policy.PolicyName);
-                    cmd.Parameters.AddWithValue("@policyType", policy.PolicyType);
-                    cmd.Parameters.AddWithValue("@coverageAmount", policy.CoverageAmount);
-
-                    return cmd.ExecuteNonQuery() > 0;
+                    throw new ArgumentException("Invalid Policy Type");
                 }
-                catch (Exception ex)
+
+                using (SqlConnection conn = DBUtility.GetConnection())
                 {
-                    Console.WriteLine($"Error in CreatePolicy: {ex.Message}");
-                    return false;
+                    string query = "INSERT INTO Policies (policyName, policyType, coverageAmount) VALUES (@name, @type, @amount)";
+                    SqlCommand cmd = new SqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@name", policy.PolicyName);
+                    cmd.Parameters.AddWithValue("@type", policy.PolicyType);
+                    cmd.Parameters.AddWithValue("@amount", policy.CoverageAmount);
+                    int rows = cmd.ExecuteNonQuery();
+
+                    return rows > 0;
                 }
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error in CreatePolicy: " + ex.Message);
+                return false;
+            }
         }
-
         public Policy GetPolicy(int policyId)
         {
             using (SqlConnection connection = DBUtility.GetConnection())
@@ -127,25 +136,111 @@ namespace InsuranceClaim.service
 
         public bool DeletePolicy(int policyId)
         {
+            using (SqlConnection conn = DBUtility.GetConnection())
+                if(conn == null) return false;
+            try
+            {
+                
+                {
+                    // Step 1: Get all clientIds for this policy
+                    SqlCommand getClientIdsCmd = new SqlCommand("SELECT clientId FROM Clients WHERE policyId = @policyId", conn);
+                    getClientIdsCmd.Parameters.AddWithValue("@policyId", policyId);
+
+                    List<int> clientIds = new List<int>();
+                    using (SqlDataReader reader = getClientIdsCmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            clientIds.Add(reader.GetInt32(0));
+                        }
+                    }
+
+                    // Step 2: Delete claims for those clients
+                    foreach (int clientId in clientIds)
+                    {
+                        SqlCommand deleteClaimsCmd = new SqlCommand("DELETE FROM Claims WHERE clientId = @clientId", conn);
+                        deleteClaimsCmd.Parameters.AddWithValue("@clientId", clientId);
+                        deleteClaimsCmd.ExecuteNonQuery();
+                    }
+
+                    // Step 3: Delete clients linked to policy
+                    SqlCommand deleteClientsCmd = new SqlCommand("DELETE FROM Clients WHERE policyId = @policyId", conn);
+                    deleteClientsCmd.Parameters.AddWithValue("@policyId", policyId);
+                    deleteClientsCmd.ExecuteNonQuery();
+
+                    // Step 4: Delete the policy
+                    SqlCommand deletePolicyCmd = new SqlCommand("DELETE FROM Policies WHERE policyId = @policyId", conn);
+                    deletePolicyCmd.Parameters.AddWithValue("@policyId", policyId);
+                    int rowsAffected = deletePolicyCmd.ExecuteNonQuery();
+
+                    return rowsAffected > 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error in DeletePolicy: " + ex.Message);
+                return false;
+            }
+        }
+        public bool ApplyPolicy(int clientId, int policyId)
+        {
             using (SqlConnection connection = DBUtility.GetConnection())
             {
                 if (connection == null) return false;
 
                 try
                 {
-                    string query = "DELETE FROM Policies WHERE policyId = @policyId";
-                    SqlCommand cmd = new SqlCommand(query, connection);
-                    cmd.Parameters.AddWithValue("@policyId", policyId);
+                    // Step 1: Check if the policy exists
+                    string checkPolicyQuery = "SELECT COUNT(1) FROM Policies WHERE policyId = @policyId";
+                    SqlCommand checkPolicyCmd = new SqlCommand(checkPolicyQuery, connection);
+                    checkPolicyCmd.Parameters.AddWithValue("@policyId", policyId);
 
-                    return cmd.ExecuteNonQuery() > 0;
+                    int policyExists = (int)checkPolicyCmd.ExecuteScalar();
+                    if (policyExists == 0)
+                    {
+                        Console.WriteLine("Policy does not exist.");
+                        return false;
+                    }
+
+                    // Step 2: Check if the client already has a policy applied
+                    string checkClientPolicyQuery = "SELECT COUNT(1) FROM Clients WHERE clientId = @clientId";
+                    SqlCommand checkClientPolicyCmd = new SqlCommand(checkClientPolicyQuery, connection);
+                    checkClientPolicyCmd.Parameters.AddWithValue("@clientId", clientId);
+
+                    int clientHasPolicy = (int)checkClientPolicyCmd.ExecuteScalar();
+                    if (clientHasPolicy > 0)
+                    {
+                        Console.WriteLine("Client already has a policy applied.");
+                        return false;
+                    }
+
+                    // Step 3: Apply the policy to the client by inserting the relationship
+                    string applyPolicyQuery = "UPDATE Clients SET policyId = @policyId WHERE clientId = @clientId";
+                    SqlCommand applyPolicyCmd = new SqlCommand(applyPolicyQuery, connection);
+                    applyPolicyCmd.Parameters.AddWithValue("@clientId", clientId);
+                    applyPolicyCmd.Parameters.AddWithValue("@policyId", policyId);
+
+                    int rowsAffected = applyPolicyCmd.ExecuteNonQuery();
+                    if (rowsAffected > 0)
+                    {
+                        Console.WriteLine($"Policy {policyId} successfully applied to Client {clientId}.");
+                        return true;
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to apply policy.");
+                        return false;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error in DeletePolicy: {ex.Message}");
+                    Console.WriteLine($"Error in ApplyPolicy: {ex.Message}");
                     return false;
                 }
             }
         }
+
+
 
         // --- CLAIM METHODS ---
 

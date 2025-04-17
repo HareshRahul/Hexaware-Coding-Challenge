@@ -20,5 +20,8 @@ namespace InsuranceClaim.service
         // Client-related methods
         bool CreateClient(Client client);
         Client GetClient(int clientId);
+
+        // Apply Policy to Client
+        bool ApplyPolicy(int clientId, int policyId); // Apply a policy to a client
     }
 }
